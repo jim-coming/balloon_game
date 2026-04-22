@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>氣球射擊遊戲</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; display: flex; align-items: center; justify-content: center; min-height: 100vh; font-family: "Microsoft JhengHei", sans-serif; }
+#game-wrap { width: 700px; height: 520px; position: relative; overflow: hidden; cursor: crosshair; user-select: none; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.5); }
+#sky-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#ground { position: absolute; bottom: 0; left: 0; width: 100%; height: 48px; background: #5a8c3a; z-index: 1; }
+#grass { position: absolute; bottom: 48px; left: 0; width: 100%; height: 10px; background: #6db542; z-index: 1; }
+#hud { position: absolute; top: 12px; left: 0; width: 100%; display: flex; justify-content: space-between; padding: 0 16px; pointer-events: none; z-index: 10; }
+.hud-box { background: rgba(0,0,0,0.35); color: #fff; font-size: 15px; font-weight: 500; border-radius: 8px; padding: 6px 14px; }
+#overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.52); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; z-index: 20; }
+#overlay h2 { color: #fff; font-size: 26px; font-weight: 700; }
+#overlay p { color: rgba(255,255,255,0.8); font-size: 15px; text-align: center; }
+#overlay button { padding: 10px 32px; border-radius: 8px; border: none; background: #fff; color: #333; font-size: 16px; font-weight: 600; cursor: pointer; }
+#overlay button:hover { background: #eee; }
+.diff-row { display: flex; gap: 10px; }
+.diff-btn { padding: 8px 20px; border-radius: 8px; border: 2px solid #fff; background: transparent; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; transition: background 0.15s; }
+.diff-btn:hover, .diff-btn.active { background: rgba(255,255,255,0.25); }
+.balloon { position: absolute; border-radius: 50%; cursor: crosshair; z-index: 5; }
+.string { position: absolute; width: 2px; background: rgba(0,0,0,0.3); bottom: -18px; left: 50%; transform: translateX(-50%); border-radius: 1px; height: 18px; }
+.pop { position: absolute; pointer-events: none; font-size: 22px; animation: popAnim 0.5s forwards; z-index: 6; }
+@keyframes popAnim { 0%{opacity:1;transform:scale(0.5)} 50%{opacity:1;transform:scale(1.4)} 100%{opacity:0;transform:scale(1.8)} }
+.score-pop { position: absolute; pointer-events: none; color: #fff; font-weight: 600; font-size: 15px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); animation: scoreAnim 0.8s forwards; z-index: 6; }
+@keyframes scoreAnim { 0%{opacity:1;transform:translateY(0)} 100%{opacity:0;transform:translateY(-40px)} }
+.bullet { position: absolute; width: 6px; height: 6px; background: #333; border-radius: 50%; pointer-events: none; z-index: 5; }
+</style>
+</head>
+<body>
+<div id="game-wrap">
+  <canvas id="sky-canvas"></canvas>
+  <div id="ground"></div>
+  <div id="grass"></div>
+  <div id="hud">
+    <div class="hud-box">score: <span id="score-val">0</span></div>
+    <div class="hud-box">time: <span id="time-val">30</span>s</div>
+    <div class="hud-box" id="diff-hud">難度: —</div>
+  </div>
+  <div id="overlay">
+    <h2>🎈 氣球射擊</h2>
+    <p>選擇難度後開始遊戲<br>點擊氣球或發射子彈來得分！</p>
+    <div class="diff-row">
+      <button class="diff-btn" onclick="selectDiff('easy',this)">簡單</button>
+      <button class="diff-btn" onclick="selectDiff('normal',this)">普通</button>
+      <button class="diff-btn" onclick="selectDiff('hard',this)">困難</button>
+      <button class="diff-btn" onclick="selectDiff('insane',this)">地獄</button>
+    </div>
+    <button onclick="startGame()">開始遊戲</button>
+    <p style="font-size:13px;opacity:0.6">小氣球 30pt｜中 20pt｜大 10pt｜超大 5pt</p>
+  </div>
+</div>
+
+<script>
+const wrap = document.getElementById('game-wrap');
+const overlay = document.getElementById('overlay');
+const scoreEl = document.getElementById('score-val');
+const timeEl = document.getElementById('time-val');
+const diffHud = document.getElementById('diff-hud');
+const skyCanvas = document.getElementById('sky-canvas');
+const skyCtx = skyCanvas.getContext('2d');
+
+const COLORS = ['#e74c3c','#e67e22','#f1c40f','#2ecc71','#3498db','#9b59b6','#e91e8c','#00bcd4'];
+const DIFF = {
+  easy:   { spawnMs:1400, speedMin:0.4, speedMax:1.0, sizes:[54,64,74],    timeLimit:40, label:'簡單' },
+  normal: { spawnMs:1100, speedMin:0.6, speedMax:1.6, sizes:[44,54,64,38], timeLimit:30, label:'普通' },
+  hard:   { spawnMs:700,  speedMin:1.2, speedMax:2.6, sizes:[34,40,50,28], timeLimit:25, label:'困難' },
+  insane: { spawnMs:420,  speedMin:2.0, speedMax:4.0, sizes:[24,30,36,20], timeLimit:20, label:'地獄' },
+};
+
+let currentDiff = 'normal';
+let balloons = [], bullets = [], score = 0, timeLeft = 30, gameActive = false, countTimer;
+
+function rand(a, b) { return Math.random()*(b-a)+a; }
+
+const clouds = Array.from({length:5}, () => ({
+  x: rand(0,700), y: rand(40,180), w: rand(80,140), h: rand(28,48), speed: rand(0.2,0.5)
+}));
+const birds = Array.from({length:6}, () => ({
+  x: rand(0,700), y: rand(60,200), speed: rand(0.5,1.2), flapT: rand(0,Math.PI*2)
+}));
+let skyT = 0;
+
+function drawSky(dt) {
+  skyT += dt * 0.0003;
+  const W = skyCanvas.width, H = skyCanvas.height;
+  const r1 = Math.round(100+30*Math.sin(skyT));
+  const g1 = Math.round(160+20*Math.sin(skyT+1));
+  const b1 = Math.round(220+20*Math.sin(skyT+2));
+  const r2 = Math.round(160+30*Math.sin(skyT+1.5));
+  const g2 = Math.round(210+15*Math.sin(skyT+2.5));
+  const grad = skyCtx.createLinearGradient(0,0,0,H-58);
+  grad.addColorStop(0, `rgb(${r1},${g1},${b1})`);
+  grad.addColorStop(1, `rgb(${r2},${g2},240)`);
+  skyCtx.fillStyle = grad;
+  skyCtx.fillRect(0,0,W,H);
+
+  const sunX = W*0.82, sunY = 55;
+  const sunR = 28+4*Math.sin(skyT*2);
+  skyCtx.beginPath();
+  skyCtx.arc(sunX,sunY,sunR+12,0,Math.PI*2);
+  skyCtx.fillStyle = 'rgba(255,230,80,0.18)';
+  skyCtx.fill();
+  skyCtx.beginPath();
+  skyCtx.arc(sunX,sunY,sunR,0,Math.PI*2);
+  skyCtx.fillStyle = 'rgba(255,230,80,0.88)';
+  skyCtx.fill();
+
+  clouds.forEach(c => {
+    c.x += c.speed * dt * 0.03;
+    if (c.x > W+c.w) c.x = -c.w;
+    skyCtx.save();
+    skyCtx.globalAlpha = 0.88;
+    skyCtx.fillStyle = '#fff';
+    skyCtx.beginPath();
+    skyCtx.ellipse(c.x,c.y,c.w/2,c.h/2,0,0,Math.PI*2); skyCtx.fill();
+    skyCtx.beginPath();
+    skyCtx.ellipse(c.x-c.w*0.25,c.y+4,c.w*0.3,c.h*0.4,0,0,Math.PI*2); skyCtx.fill();
+    skyCtx.beginPath();
+    skyCtx.ellipse(c.x+c.w*0.25,c.y+6,c.w*0.32,c.h*0.38,0,0,Math.PI*2); skyCtx.fill();
+    skyCtx.restore();
+  });
+
+  birds.forEach(bird => {
+    bird.x += bird.speed * dt * 0.04;
+    bird.flapT += dt * 0.008;
+    if (bird.x > W+20) bird.x = -20;
+    const flap = Math.sin(bird.flapT)*5;
+    skyCtx.save();
+    skyCtx.strokeStyle = '#444';
+    skyCtx.lineWidth = 1.5;
+    skyCtx.beginPath();
+    skyCtx.moveTo(bird.x,bird.y);
+    skyCtx.quadraticCurveTo(bird.x+6,bird.y-flap,bird.x+12,bird.y);
+    skyCtx.moveTo(bird.x+12,bird.y);
+    skyCtx.quadraticCurveTo(bird.x+18,bird.y-flap,bird.x+24,bird.y);
+    skyCtx.stroke();
+    skyCtx.restore();
+  });
+}
+
+function resizeSky() {
+  skyCanvas.width = wrap.offsetWidth;
+  skyCanvas.height = wrap.offsetHeight;
+}
+resizeSky();
+
+function spawnBalloon() {
+  if (!gameActive) return;
+  const cfg = DIFF[currentDiff];
+  const size = cfg.sizes[Math.floor(Math.random()*cfg.sizes.length)];
+  const color = COLORS[Math.floor(Math.random()*COLORS.length)];
+  const x = rand(size, wrap.offsetWidth-size);
+  const speedY = rand(cfg.speedMin, cfg.speedMax);
+  const wobble = rand(-0.5, 0.5);
+  const pts = size<=24?30:size<=36?20:size<=50?10:5;
+  const el = document.createElement('div');
+  el.className = 'balloon';
+  el.style.cssText = `width:${size}px;height:${size}px;background:${color};left:${x}px;top:${wrap.offsetHeight-58-size}px;box-shadow:inset -5px -5px 0 rgba(0,0,0,0.12);`;
+  const str = document.createElement('div');
+  str.className = 'string';
+  el.appendChild(str);
+  const b = { el, x, topY: wrap.offsetHeight-58-size, speedY, wobbleX:wobble, pts, size, alive:true };
+  el.addEventListener('click', (e) => { e.stopPropagation(); if (!gameActive) return; popBalloon(el,b,e.clientX,e.clientY); });
+  wrap.appendChild(el);
+  balloons.push(b);
+}
+
+function popBalloon(el, b, cx, cy) {
+  if (!b.alive) return;
+  b.alive = false; score += b.pts; scoreEl.textContent = score;
+  const rect = wrap.getBoundingClientRect();
+  const px = cx-rect.left, py = cy-rect.top;
+  const pop = document.createElement('div');
+  pop.className='pop'; pop.textContent='💥';
+  pop.style.cssText=`left:${px-16}px;top:${py-16}px;`;
+  wrap.appendChild(pop); setTimeout(()=>pop.remove(),500);
+  const sp = document.createElement('div');
+  sp.className='score-pop'; sp.textContent=`+${b.pts}`;
+  sp.style.cssText=`left:${px}px;top:${py-20}px;`;
+  wrap.appendChild(sp); setTimeout(()=>sp.remove(),800);
+  el.remove(); balloons = balloons.filter(x=>x!==b);
+}
+
+wrap.addEventListener('click', (e) => {
+  if (!gameActive) return;
+  const rect = wrap.getBoundingClientRect();
+  const tx = e.clientX-rect.left, ty = e.clientY-rect.top;
+  const bEl = document.createElement('div');
+  bEl.className='bullet';
+  const sx=wrap.offsetWidth/2, sy=wrap.offsetHeight-58;
+  bEl.style.cssText=`left:${sx}px;top:${sy}px;`;
+  wrap.appendChild(bEl);
+  const dx=tx-sx, dy=ty-sy, dist=Math.sqrt(dx*dx+dy*dy);
+  bullets.push({el:bEl, bx:sx, by:sy, vx:(dx/dist)*16, vy:(dy/dist)*16});
+});
+
+let lastTime=0, spawnAccum=0;
+
+function gameLoop(ts) {
+  const dt = Math.min(ts-lastTime, 50);
+  lastTime = ts;
+  drawSky(dt);
+  if (!gameActive) { requestAnimationFrame(gameLoop); return; }
+  spawnAccum += dt;
+  const cfg = DIFF[currentDiff];
+  if (spawnAccum > cfg.spawnMs) { spawnBalloon(); spawnAccum=0; }
+  for (let i=balloons.length-1;i>=0;i--) {
+    const b=balloons[i]; if(!b.alive) continue;
+    b.topY-=b.speedY; b.x+=b.wobbleX;
+    b.x=Math.max(b.size/2,Math.min(wrap.offsetWidth-b.size/2,b.x));
+    b.el.style.left=(b.x-b.size/2)+'px'; b.el.style.top=b.topY+'px';
+    if(b.topY<-b.size-20){b.alive=false;b.el.remove();balloons.splice(i,1);}
+  }
+  for (let i=bullets.length-1;i>=0;i--) {
+    const bl=bullets[i]; bl.bx+=bl.vx; bl.by+=bl.vy;
+    bl.el.style.left=bl.bx+'px'; bl.el.style.top=bl.by+'px';
+    let hit=false;
+    for (const b of balloons) {
+      if(!b.alive) continue;
+      const dist=Math.sqrt((bl.bx-b.x)**2+(bl.by-(b.topY+b.size/2))**2);
+      if(dist<b.size/2+4){
+        const wRect=wrap.getBoundingClientRect();
+        popBalloon(b.el,b,b.x+wRect.left,b.topY+b.size/2+wRect.top);
+        hit=true; break;
+      }
+    }
+    if(hit||bl.bx<0||bl.bx>wrap.offsetWidth||bl.by<0||bl.by>wrap.offsetHeight){
+      bl.el.remove(); bullets.splice(i,1);
+    }
+  }
+  requestAnimationFrame(gameLoop);
+}
+
+function selectDiff(key, el) {
+  currentDiff=key;
+  document.querySelectorAll('.diff-btn').forEach(b=>b.classList.remove('active'));
+  el.classList.add('active');
+}
+
+function startGame() {
+  const cfg=DIFF[currentDiff];
+  score=0; timeLeft=cfg.timeLimit; balloons=[]; bullets=[];
+  scoreEl.textContent='0'; timeEl.textContent=timeLeft;
+  diffHud.textContent='難度: '+cfg.label;
+  wrap.querySelectorAll('.balloon,.bullet,.pop,.score-pop').forEach(e=>e.remove());
+  overlay.style.display='none';
+  gameActive=true; spawnAccum=0;
+  countTimer=setInterval(()=>{ timeLeft--; timeEl.textContent=timeLeft; if(timeLeft<=0) endGame(); },1000);
+}
+
+function endGame() {
+  gameActive=false; clearInterval(countTimer);
+  balloons.forEach(b=>b.el&&b.el.remove());
+  bullets.forEach(b=>b.el&&b.el.remove());
+  balloons=[]; bullets=[];
+  const rank=score>=300?'神射手 🏆':score>=150?'精準射手 🎯':score>=80?'初學者 👍':'繼續加油 💪';
+  overlay.style.display='flex';
+  overlay.innerHTML=`
+    <h2>🎈 遊戲結束！</h2>
+    <p>分數：<strong style="font-size:22px">${score}</strong> 分<br>${rank}</p>
+    <div class="diff-row">
+      <button class="diff-btn ${currentDiff==='easy'?'active':''}" onclick="selectDiff('easy',this)">簡單</button>
+      <button class="diff-btn ${currentDiff==='normal'?'active':''}" onclick="selectDiff('normal',this)">普通</button>
+      <button class="diff-btn ${currentDiff==='hard'?'active':''}" onclick="selectDiff('hard',this)">困難</button>
+      <button class="diff-btn ${currentDiff==='insane'?'active':''}" onclick="selectDiff('insane',this)">地獄</button>
+    </div>
+    <button onclick="startGame()">再玩一次</button>
+    <p style="font-size:13px;opacity:0.6">小氣球 30pt｜中 20pt｜大 10pt｜超大 5pt</p>
+  `;
+}
+
+requestAnimationFrame(gameLoop);
+</script>
+</body>
+</html>
