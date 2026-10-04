@@ -1,0 +1,15 @@
+{
+  "name": "balloon-club",
+  "version": "2.0.0",
+  "private": true,
+  "description": "A responsive balloon arcade with classic, arcade and mission modes.",
+  "scripts": {
+    "dev": "python3 -m http.server 8080 --bind 127.0.0.1",
+    "test": "node --test tests/core.test.cjs",
+    "test:e2e": "playwright test",
+    "capture": "node scripts/capture-preview.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}
